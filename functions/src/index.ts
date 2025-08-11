@@ -1,20 +1,28 @@
 // functions/src/index.ts
-import * as functions from 'firebase-functions';
-import * as admin from 'firebase-admin';
+import { onSchedule } from 'firebase-functions/v2/scheduler';
+import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { initializeApp } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
 import * as nodemailer from 'nodemailer';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
+import * as functions from "firebase-functions";
 
-admin.initializeApp();
+
+// Initialize Firebase Admin
+initializeApp();
+const db = getFirestore();
 
 // Email transporter setup
-const transporter = nodemailer.createTransporter({
-  service: 'gmail',
-  auth: {
-    user: functions.config().gmail.user,
-    pass: functions.config().gmail.password
-  }
-});
+const getTransporter = () => {
+    return nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: functions.config().gmail.user,
+        pass: functions.config().gmail.pass,
+      },
+    });
+  };
 
 interface SearchResult {
   title: string;
@@ -40,84 +48,91 @@ interface User {
 }
 
 // Scheduled function to run daily book searches
-export const dailyBookSearch = functions.pubsub.schedule('0 9 * * *')
-  .timeZone('America/New_York')
-  .onRun(async (context) => {
-    console.log('Starting daily book search...');
+export const dailyBookSearch = onSchedule({
+  schedule: '0 9 * * *',
+  timeZone: 'America/New_York',
+  region: 'us-central1',
+  memory: '512MiB',
+  timeoutSeconds: 540, // 9 minutes
+}, async (event) => {
+  console.log('Starting daily book search...');
+  
+  try {
+    // Get all users with notifications enabled
+    const usersSnapshot = await db.collection('users')
+      .where('notifications', '==', true)
+      .get();
+    console.log(`Found ${usersSnapshot.docs.length} users with notifications enabled`);
     
-    const db = admin.firestore();
-    
-    try {
-      // Get all users with notifications enabled
-      const usersSnapshot = await db.collection('users')
-        .where('notifications', '==', true)
-        .get();
-      console.log(`Found ${usersSnapshot.docs.length} users with notifications enabled`);
+    for (const userDoc of usersSnapshot.docs) {
+      const userData = userDoc.data() as User;
       
-      for (const userDoc of usersSnapshot.docs) {
-        const userData = userDoc.data() as User;
+      // Get user's books
+      const booksSnapshot = await db.collection('books')
+        .where('userId', '==', userDoc.id)
+        .get();
+      
+      console.log(`User ${userData.email} has ${booksSnapshot.docs.length} books`);
+      
+      for (const bookDoc of booksSnapshot.docs) {
+        const book = { id: bookDoc.id, ...bookDoc.data() } as Book;
         
-        // Get user's books
-        const booksSnapshot = await db.collection('books')
-          .where('userId', '==', userDoc.id)
-          .get();
+        // Skip if searched recently (within last 6 hours to avoid spam)
+        const lastSearched = book.lastSearched ? new Date(book.lastSearched) : null;
+        const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
         
-        console.log(`User ${userData.email} has ${booksSnapshot.docs.length} books`);
-        
-        for (const bookDoc of booksSnapshot.docs) {
-          const book = { id: bookDoc.id, ...bookDoc.data() } as Book;
-          
-          // Skip if searched recently (within last 6 hours to avoid spam)
-          const lastSearched = book.lastSearched ? new Date(book.lastSearched) : null;
-          const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
-          
-          if (lastSearched && lastSearched > sixHoursAgo) {
-            console.log(`Skipping "${book.title}" - searched recently`);
-            continue;
-          }
-          
-          try {
-            const results = await searchAllPlatforms(book.title, book.author);
-            
-            if (results.length > 0) {
-              await sendEmailToUser(userData.email, userData.displayName, book.title, results);
-              await saveNotifications(userDoc.id, book.title, results);
-              console.log(`Found ${results.length} results for "${book.title}" for user ${userData.email}`);
-            }
-            
-            // Update last searched timestamp
-            await bookDoc.ref.update({
-              lastSearched: new Date().toISOString()
-            });
-            
-            // Add delay between searches to be respectful
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            
-          } catch (error) {
-            console.error(`Error searching for book "${book.title}":`, error);
-          }
+        if (lastSearched && lastSearched > sixHoursAgo) {
+          console.log(`Skipping "${book.title}" - searched recently`);
+          continue;
         }
         
-        // Add delay between users
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        try {
+          const results = await searchAllPlatforms(book.title, book.author);
+          
+          if (results.length > 0) {
+            await sendEmailToUser(userData.email, userData.displayName, book.title, results);
+            await saveNotifications(userDoc.id, book.title, results);
+            console.log(`Found ${results.length} results for "${book.title}" for user ${userData.email}`);
+          }
+          
+          // Update last searched timestamp
+          await bookDoc.ref.update({
+            lastSearched: new Date().toISOString()
+          });
+          
+          // Add delay between searches to be respectful
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+        } catch (error) {
+          console.error(`Error searching for book "${book.title}":`, error);
+        }
       }
-    } catch (error) {
-      console.error('Error in daily book search:', error);
+      
+      // Add delay between users
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    
-    console.log('Daily book search completed');
-  });
-
-// Manual search function that can be called from the frontend
-export const searchBook = functions.https.onCall(async (data, context) => {
-  if (!context.auth) {
-    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+  } catch (error) {
+    console.error('Error in daily book search:', error);
   }
   
-  const { bookTitle, author } = data;
+  console.log('Daily book search completed');
+});
+
+// Manual search function that can be called from the frontend
+export const searchBook = onCall({
+  region: 'us-central1',
+  memory: '256MiB',
+  timeoutSeconds: 60,
+  enforceAppCheck: false, // Set to true if you're using App Check
+}, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'User must be authenticated');
+  }
+  
+  const { bookTitle, author } = request.data;
   
   if (!bookTitle) {
-    throw new functions.https.HttpsError('invalid-argument', 'Book title is required');
+    throw new HttpsError('invalid-argument', 'Book title is required');
   }
   
   try {
@@ -125,29 +140,72 @@ export const searchBook = functions.https.onCall(async (data, context) => {
     return { results, searchedAt: new Date().toISOString() };
   } catch (error) {
     console.error('Error in manual search:', error);
-    throw new functions.https.HttpsError('internal', 'Search failed');
+    throw new HttpsError('internal', 'Search failed');
   }
 });
 
 // Function to mark notifications as read
-export const markNotificationRead = functions.https.onCall(async (data, context) => {
-  if (!context.auth) {
-    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+export const markNotificationRead = onCall({
+  region: 'us-central1',
+  memory: '256MiB',
+  timeoutSeconds: 30,
+}, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'User must be authenticated');
   }
   
-  const { notificationId } = data;
-  const db = admin.firestore();
+  const { notificationId } = request.data;
+  
+  if (!notificationId) {
+    throw new HttpsError('invalid-argument', 'Notification ID is required');
+  }
   
   try {
     await db.collection('notifications').doc(notificationId).update({
       read: true,
-      readAt: admin.firestore.FieldValue.serverTimestamp()
+      readAt: new Date()
     });
     
     return { success: true };
   } catch (error) {
     console.error('Error marking notification as read:', error);
-    throw new functions.https.HttpsError('internal', 'Failed to update notification');
+    throw new HttpsError('internal', 'Failed to update notification');
+  }
+});
+
+// Function to get user notifications
+export const getUserNotifications = onCall({
+  region: 'us-central1',
+  memory: '256MiB',
+  timeoutSeconds: 30,
+}, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'User must be authenticated');
+  }
+  
+  const { limit = 50, unreadOnly = false } = request.data;
+  const userId = request.auth.uid;
+  
+  try {
+    let query = db.collection('notifications')
+      .where('userId', '==', userId)
+      .orderBy('createdAt', 'desc')
+      .limit(limit);
+    
+    if (unreadOnly) {
+      query = query.where('read', '==', false);
+    }
+    
+    const snapshot = await query.get();
+    const notifications = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+    
+    return { notifications };
+  } catch (error) {
+    console.error('Error fetching notifications:', error);
+    throw new HttpsError('internal', 'Failed to fetch notifications');
   }
 });
 
@@ -166,11 +224,11 @@ async function searchAllPlatforms(bookTitle: string, author?: string): Promise<S
         console.error('Reddit search failed:', err);
         return [];
       }),
-      // Facebook Marketplace would require more complex setup
-      // searchFacebookMarketplace(searchQuery).catch(err => {
-      //   console.error('Facebook search failed:', err);
-      //   return [];
-      // })
+      // eBay search could be added here
+      searcheBay(searchQuery).catch(err => {
+        console.error('eBay search failed:', err);
+        return [];
+      })
     ];
     
     const allResults = await Promise.all(searchPromises);
@@ -190,22 +248,45 @@ async function searchAllPlatforms(bookTitle: string, author?: string): Promise<S
   return results;
 }
 
-async function searchFacebookMarketplace(searchQuery: string): Promise<SearchResult[]> {
+async function searcheBay(searchQuery: string): Promise<SearchResult[]> {
   try {
-    // Note: Facebook Marketplace requires complex authentication and browser automation
-    // This would need Puppeteer or similar tool in a real implementation
+    // eBay search using their basic search (no API key required)
+    const searchUrl = `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(searchQuery + ' book')}&_sacat=267&LH_Sold=0&LH_Complete=0`;
     
-    console.log(`Facebook Marketplace search not implemented for: ${searchQuery}`);
+    const response = await axios.get(searchUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+      },
+      timeout: 15000,
+      maxRedirects: 3
+    });
     
-    // Placeholder - in production you would:
-    // 1. Use Puppeteer with stealth plugins
-    // 2. Handle Facebook's authentication
-    // 3. Parse dynamic content
-    // 4. Implement proper rate limiting
+    const $ = cheerio.load(response.data);
+    const results: SearchResult[] = [];
     
-    return [];
+    $('.s-item').each((index, element) => {
+      if (index >= 10 || index === 0) return; // Skip first ad item, limit to 10 results
+      
+      const $element = $(element);
+      const title = $element.find('.s-item__title').text().trim();
+      const price = $element.find('.s-item__price').text().trim();
+      const link = $element.find('.s-item__link').attr('href');
+      const condition = $element.find('.SECONDARY_INFO').text().trim();
+      
+      if (title && !title.toLowerCase().includes('shop on ebay')) {
+        results.push({
+          title: title,
+          price: price || 'Price not listed',
+          source: 'eBay',
+          link: link || '',
+          condition: condition || 'Condition not specified'
+        });
+      }
+    });
+    
+    return results;
   } catch (error) {
-    console.error('Facebook Marketplace search error:', error);
+    console.error('eBay search error:', error);
     return [];
   }
 }
@@ -273,7 +354,7 @@ async function searchReddit(searchQuery: string): Promise<SearchResult[]> {
       
       const response = await axios.get(searchUrl, {
         headers: {
-          'User-Agent': 'BookTracker/1.0 (by /u/booktracker)'
+          'User-Agent': 'BookTracker/2.0 (by /u/booktracker)'
         },
         timeout: 10000
       });
@@ -325,6 +406,8 @@ async function searchReddit(searchQuery: string): Promise<SearchResult[]> {
 
 async function sendEmailToUser(email: string, name: string, bookTitle: string, results: SearchResult[]): Promise<void> {
   try {
+    const transporter = getTransporter();
+    
     const html = `
       <!DOCTYPE html>
       <html>
@@ -458,11 +541,11 @@ async function sendEmailToUser(email: string, name: string, bookTitle: string, r
     `;
     
     await transporter.sendMail({
-      from: `"Book Tracker 📚" <${functions.config().gmail.user}>`,
-      to: email,
-      subject: `📚 ${results.length} listing${results.length !== 1 ? 's' : ''} found: ${bookTitle}`,
-      html: html
-    });
+        from: `"Book Tracker 📚" <${functions.config().gmail.user}>`,
+        to: email,
+        subject: `📚 ${results.length} listing${results.length !== 1 ? 's' : ''} found: ${bookTitle}`,
+        html: html,
+      });
     
     console.log(`Email sent to ${email} for book: ${bookTitle} (${results.length} results)`);
   } catch (error) {
@@ -472,8 +555,6 @@ async function sendEmailToUser(email: string, name: string, bookTitle: string, r
 }
 
 async function saveNotifications(userId: string, bookTitle: string, results: SearchResult[]): Promise<void> {
-  const db = admin.firestore();
-  
   try {
     const batch = db.batch();
     
@@ -490,7 +571,7 @@ async function saveNotifications(userId: string, bookTitle: string, results: Sea
         seller: result.seller || null,
         date: new Date().toISOString().split('T')[0],
         read: false,
-        createdAt: admin.firestore.FieldValue.serverTimestamp()
+        createdAt: new Date()
       });
     }
     
@@ -503,35 +584,50 @@ async function saveNotifications(userId: string, bookTitle: string, results: Sea
 }
 
 // Clean up old notifications (run weekly)
-export const cleanupOldNotifications = functions.pubsub.schedule('0 2 * * 0')
-  .timeZone('America/New_York')
-  .onRun(async (context) => {
-    console.log('Starting cleanup of old notifications...');
-    
-    const db = admin.firestore();
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    
-    try {
-      const oldNotifications = await db.collection('notifications')
-        .where('createdAt', '<', thirtyDaysAgo)
-        .limit(500)
-        .get();
-      
-      if (oldNotifications.empty) {
-        console.log('No old notifications to clean up');
-        return;
-      }
-      
-      const batch = db.batch();
-      oldNotifications.docs.forEach(doc => {
-        batch.delete(doc.ref);
-      });
-      
-      await batch.commit();
-      console.log(`Deleted ${oldNotifications.docs.length} old notifications`);
-    } catch (error) {
-      console.error('Error cleaning up old notifications:', error);
-    }
-  });
+export const cleanupOldNotifications = onSchedule({
+  schedule: '0 2 * * 0',
+  timeZone: 'America/New_York',
+  region: 'us-central1',
+  memory: '256MiB',
+  timeoutSeconds: 300,
+}, async (event) => {
+  console.log('Starting cleanup of old notifications...');
   
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  
+  try {
+    const oldNotifications = await db.collection('notifications')
+      .where('createdAt', '<', thirtyDaysAgo)
+      .limit(500)
+      .get();
+    
+    if (oldNotifications.empty) {
+      console.log('No old notifications to clean up');
+      return;
+    }
+    
+    const batch = db.batch();
+    oldNotifications.docs.forEach(doc => {
+      batch.delete(doc.ref);
+    });
+    
+    await batch.commit();
+    console.log(`Deleted ${oldNotifications.docs.length} old notifications`);
+  } catch (error) {
+    console.error('Error cleaning up old notifications:', error);
+  }
+});
+
+// Health check function
+export const healthCheck = onCall({
+  region: 'us-central1',
+  memory: '128MiB',
+  timeoutSeconds: 10,
+}, async (request) => {
+  return {
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    version: '2.0.0'
+  };
+});
