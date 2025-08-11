@@ -6,8 +6,8 @@ import { SearchResults } from '../components/search/SearchResults';
 import { NotificationPanel } from '../components/notifications/NotificationPanel';
 import { useAuth } from '../hooks/useAuth';
 import { useBooks } from '../hooks/useBooks';
-import { useSearch } from '../hooks/useSearch';
-import { useNotifications } from '../hooks/useNotifications';
+import { useSearch } from '@/hooks/useSearch';
+import { useNotifications } from '@/hooks/useNotifications';
 
 interface DashboardProps {
   user: User;

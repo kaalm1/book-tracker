@@ -1,54 +1,75 @@
 import { SearchResult, SearchSource } from '../types';
+import { httpsCallable } from 'firebase/functions';
+import { functions } from './firebase'; // Assuming you export functions from your firebase config
 
-export const searchService = {
-  async searchAllSources(bookTitle: string): Promise<SearchResult[]> {
-    // Mock implementation - replace with real search logic
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        const mockResults: SearchResult[] = [
-          {
-            id: '1',
-            title: bookTitle,
-            price: '$15.99',
-            source: 'amazon',
-            condition: 'Used - Good',
-            link: 'https://amazon.com/book/123',
-            seller: 'BookStore123'
-          },
-          {
-            id: '2',
-            title: bookTitle,
-            price: '$10.50',
-            source: 'facebook',
-            condition: 'Used - Very Good',
-            link: 'https://facebook.com/marketplace/456',
-            seller: 'LocalSeller'
-          }
-        ];
-        resolve(mockResults);
-      }, 2000);
-    });
-  },
+
+export class SearchServiceClass {
+    async searchAllSources(bookTitle: string, author?: string): Promise<SearchResult[]> {
+        try {
+          const searchBookFunction = httpsCallable<
+            { bookTitle: string; author?: string },
+            { results: SearchResult[] }
+          >(functions, 'searchBook');
+      
+          const result = await searchBookFunction({ bookTitle, author });
+          return result.data.results || [];
+        } catch (error) {
+          console.error('Error searching all sources:', error);
+          return this.getMockResults(bookTitle);
+        }
+      }
 
   async searchSingleSource(bookTitle: string, source: SearchSource): Promise<SearchResult[]> {
-    // Implementation for searching specific platforms
     switch (source) {
       case 'facebook':
         return this.searchFacebookMarketplace(bookTitle);
       case 'craigslist':
         return this.searchCraigslist(bookTitle);
+      case 'reddit':
+        return this.searchReddit(bookTitle);
       default:
         return [];
     }
-  },
+  }
 
   private async searchFacebookMarketplace(bookTitle: string): Promise<SearchResult[]> {
-    // Implementation for Facebook Marketplace
-    return [];
-  },
-
-  private async searchCraigslist(bookTitle: string): Promise<SearchResult[]> {
-    // Implementation for Craigslist
+    // Facebook Marketplace search implementation
+    console.log(`Searching Facebook Marketplace for: ${bookTitle}`);
     return [];
   }
-};
+
+  private async searchCraigslist(bookTitle: string): Promise<SearchResult[]> {
+    // Craigslist search implementation
+    console.log(`Searching Craigslist for: ${bookTitle}`);
+    return [];
+  }
+
+  private async searchReddit(bookTitle: string): Promise<SearchResult[]> {
+    // Reddit search implementation
+    console.log(`Searching Reddit for: ${bookTitle}`);
+    return [];
+  }
+
+  private getMockResults(bookTitle: string): SearchResult[] {
+    return [
+      {
+        id: '1',
+        title: `${bookTitle} - First Edition`,
+        price: '$15.99',
+        source: 'craigslist',
+        condition: 'Used - Good',
+        link: 'https://craigslist.org/example',
+        seller: 'BookLover123'
+      },
+      {
+        id: '2',
+        title: `${bookTitle} (Paperback)`,
+        price: '$10.50',
+        source: 'reddit',
+        condition: 'Used - Very Good',
+        link: 'https://reddit.com/r/bookexchange/example',
+        seller: 'u/BookTrader'
+      }
+    ];
+  }
+}

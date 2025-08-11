@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Notification } from '../types';
-import { notificationsService } from '../services/notifications.service';
+import { notificationsService } from '@/services/notifications.service';
 
 export const useNotifications = (userId: string | null) => {
   const [notifications, setNotifications] = useState<Notification[]>([]);

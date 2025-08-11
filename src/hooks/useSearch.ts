@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import { SearchResult } from '../types';
-import { searchService } from '../services/search.service';
+import { SearchServiceClass } from '../services/search.service';
+
+
+export const SearchService = new SearchServiceClass();
 
 export const useSearch = () => {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -11,7 +14,7 @@ export const useSearch = () => {
     try {
       setLoading(true);
       setError(null);
-      const results = await searchService.searchAllSources(bookTitle);
+      const results = await SearchService.searchAllSources(bookTitle);
       setSearchResults(results);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Search failed');

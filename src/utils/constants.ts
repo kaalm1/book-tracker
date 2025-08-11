@@ -1,3 +1,5 @@
+import { SearchSource } from '../types';
+
 export const SEARCH_SOURCES: Record<SearchSource, string> = {
     facebook: 'Facebook Marketplace',
     craigslist: 'Craigslist',
@@ -17,4 +19,3 @@ export const SEARCH_SOURCES: Record<SearchSource, string> = {
     DASHBOARD: '/dashboard',
     LOGIN: '/login'
   } as const;
-  

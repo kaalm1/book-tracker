@@ -1,7 +1,7 @@
 import React from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { LoginForm } from './LoginForm';
-import { Dashboard } from '../../pages/Dashboard';
+import { Dashboard } from '@/pages/Dashboard';
 
 export const AuthWrapper: React.FC = () => {
   const { user, loading, signInWithGoogle } = useAuth();
