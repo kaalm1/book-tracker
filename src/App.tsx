@@ -1,6 +1,6 @@
 import React from 'react';
-import AuthWrapper from './components/AuthWrapper';
-import './App.css';
+import { AuthWrapper } from './components/auth/AuthWrapper';
+import './styles/globals.css';
 
 function App() {
   return (
